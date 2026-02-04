@@ -32,13 +32,23 @@ interface AppState {
   updateSession: (sessionId: string, updates: Partial<Session>) => void;
 }
 
+// Get initial theme from localStorage or default to system
+const getInitialTheme = (): 'light' | 'dark' | 'system' => {
+  if (typeof window === 'undefined') return 'system';
+  const stored = localStorage.getItem('nexus-theme');
+  if (stored === 'light' || stored === 'dark' || stored === 'system') {
+    return stored;
+  }
+  return 'system';
+};
+
 export const useAppStore = create<AppState>((set) => ({
   // Initial state
   currentProject: null,
   selectedAgentId: null,
   selectedSessionId: null,
   sidebarCollapsed: false,
-  theme: 'dark',
+  theme: getInitialTheme(),
   agents: [],
   sessions: [],
 

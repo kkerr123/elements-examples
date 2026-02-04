@@ -8,6 +8,7 @@ import {
   Circle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { ThemeToggle } from '@/components/shared/ThemeToggle';
 
 // Mock data for demo
 const mockAgents = [
@@ -82,8 +83,12 @@ export function Sidebar() {
         </nav>
       </div>
 
-      {/* Settings */}
-      <div className="p-3 border-t border-border">
+      {/* Settings & Theme */}
+      <div className="p-3 border-t border-border space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">Theme</span>
+          <ThemeToggle />
+        </div>
         <button className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-secondary/50 transition-colors text-muted-foreground hover:text-foreground">
           <Settings className="w-4 h-4" />
           <span className="text-sm">Settings</span>
