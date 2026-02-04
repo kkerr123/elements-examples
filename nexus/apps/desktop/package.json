@@ -2,7 +2,6 @@
   "name": "@nexus/desktop",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
   "description": "Nexus Desktop App - Agent Orchestration Platform",
   "main": "dist/main/index.js",
   "scripts": {
