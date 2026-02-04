@@ -95,6 +95,7 @@ export class LLMClient {
     const contentBlocks: ContentBlock[] = [];
     let currentTextBlock: { type: 'text'; text: string } | null = null;
     let currentToolUse: ToolUseBlock | null = null;
+    let currentToolInputJson = ''; // Accumulate JSON string for tool input
     let inputTokens = 0;
     let outputTokens = 0;
     let stopReason: string | null = null;
@@ -124,6 +125,7 @@ export class LLMClient {
                 name: event.content_block.name,
                 input: {},
               };
+              currentToolInputJson = '';
             }
             break;
 
@@ -133,7 +135,7 @@ export class LLMClient {
               callbacks.onText?.(event.delta.text);
             } else if (event.delta.type === 'input_json_delta' && currentToolUse) {
               // Accumulate JSON input for tool use
-              // Note: We need to parse the full input at content_block_stop
+              currentToolInputJson += event.delta.partial_json;
             }
             break;
 
@@ -142,9 +144,19 @@ export class LLMClient {
               contentBlocks.push(currentTextBlock as TextBlock);
               currentTextBlock = null;
             } else if (currentToolUse) {
+              // Parse the accumulated JSON input
+              if (currentToolInputJson) {
+                try {
+                  currentToolUse.input = JSON.parse(currentToolInputJson);
+                } catch {
+                  // If parsing fails, leave input as empty object
+                  console.error('Failed to parse tool input JSON:', currentToolInputJson);
+                }
+              }
               contentBlocks.push(currentToolUse);
               callbacks.onToolUse?.(currentToolUse);
               currentToolUse = null;
+              currentToolInputJson = '';
             }
             break;
 

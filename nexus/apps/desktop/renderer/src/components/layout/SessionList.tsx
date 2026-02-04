@@ -41,7 +41,7 @@ const mockSessions = [
   },
 ];
 
-const statusConfig = {
+const statusConfig: Record<string, { color: string; label: string; pulse?: boolean }> = {
   queued: { color: 'bg-gray-500', label: 'Queued' },
   running: { color: 'bg-green-500', pulse: true, label: 'Running' },
   paused: { color: 'bg-yellow-500', label: 'Paused' },

@@ -91,6 +91,8 @@ export class AgentRuntime extends EventEmitter {
   private toolContext: ToolContext;
   private conversationHistory: MessageParam[];
   private abortController: AbortController | null = null;
+  // Track the last LLM response when paused for approval
+  private pendingResponse: LLMResponse | null = null;
 
   constructor(config: AgentConfig, apiKey: string) {
     super();
@@ -184,6 +186,10 @@ export class AgentRuntime extends EventEmitter {
     this.setStatus('running');
 
     try {
+      // If we have pending approvals that have been resolved, execute them first
+      if (this.state.pendingApprovals.length > 0 && this.pendingResponse) {
+        await this.executePendingApprovals();
+      }
       await this.runConversationLoop();
     } catch (error) {
       if (error instanceof Error && error.message === 'Agent paused') {
@@ -195,6 +201,55 @@ export class AgentRuntime extends EventEmitter {
     }
 
     return this.getState();
+  }
+
+  /**
+   * Execute pending tool calls after approval
+   */
+  private async executePendingApprovals(): Promise<void> {
+    if (!this.pendingResponse || this.state.pendingApprovals.length === 0) {
+      return;
+    }
+
+    const toolCalls = this.state.pendingApprovals;
+    const response = this.pendingResponse;
+
+    // Execute the approved/rejected tool calls
+    const toolResults = await this.executeToolCalls(toolCalls);
+
+    // Create assistant message with tool calls
+    const assistantMsg: AgentMessage = {
+      role: 'assistant',
+      content: response.textContent,
+      timestamp: new Date().toISOString(),
+      toolCalls,
+      toolResults,
+    };
+    this.state.messages.push(assistantMsg);
+    this.emit('message', assistantMsg);
+
+    // Continue conversation with tool results
+    const toolResultsForLLM: ToolResult[] = toolResults.map((tr) => ({
+      tool_use_id: tr.toolCallId,
+      content: tr.output,
+      is_error: tr.isError,
+    }));
+
+    this.conversationHistory.push({
+      role: 'user',
+      content: toolResultsForLLM.map((r) => ({
+        type: 'tool_result' as const,
+        tool_use_id: r.tool_use_id,
+        content: r.content,
+        is_error: r.is_error,
+      })),
+    });
+
+    // Clear pending state
+    this.state.pendingApprovals = [];
+    this.pendingResponse = null;
+
+    this.emit('turn_complete', this.state.turnCount);
   }
 
   /**
@@ -323,6 +378,7 @@ export class AgentRuntime extends EventEmitter {
         // Check if approval is needed
         if (this.needsApproval(toolCalls)) {
           this.state.pendingApprovals = toolCalls;
+          this.pendingResponse = response; // Save response for when we resume
           this.setStatus('awaiting_approval');
           this.emit('approval_required', toolCalls);
           throw new Error('Agent paused');

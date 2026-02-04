@@ -542,14 +542,11 @@ handleIpc('checkpoint:list', async (payload: { agentId?: string; sessionId?: str
     return { checkpoints: [] };
   }
 
-  let checkpoints;
+  let checkpoints: Awaited<ReturnType<typeof checkpointManager.listByAgent>> = [];
   if (payload.agentId) {
     checkpoints = await checkpointManager.listByAgent(payload.agentId);
   } else if (payload.sessionId) {
     checkpoints = await checkpointManager.listBySession(payload.sessionId);
-  } else {
-    // List all - get unique agents and merge
-    checkpoints = [];
   }
 
   return { checkpoints };

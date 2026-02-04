@@ -1,8 +1,18 @@
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as readline from 'readline';
-import { createReadStream, createWriteStream } from 'fs';
-import type { Session, Message, ToolCall, AgentStatus } from '@nexus/shared';
+import { createReadStream } from 'fs';
+import type { Session, Message, AgentStatus } from '@nexus/shared';
+
+// Flexible message type for appending (accepts both Date and string timestamps)
+export interface SessionMessageInput {
+  id?: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: Date | string;
+  toolCalls?: unknown[];
+  toolResults?: unknown[];
+}
 
 export interface SessionMetadata {
   id: string;
@@ -86,13 +96,17 @@ export class SessionStorage {
   /**
    * Append a message to session file (JSONL format)
    */
-  async appendMessage(sessionId: string, message: Message): Promise<void> {
+  async appendMessage(sessionId: string, message: SessionMessageInput): Promise<void> {
     const sessionPath = this.getSessionPath(sessionId);
+    const timestamp = typeof message.timestamp === 'string'
+      ? message.timestamp
+      : message.timestamp.toISOString();
+
     const line = JSON.stringify({
       type: 'message',
       data: {
         ...message,
-        timestamp: message.timestamp.toISOString(),
+        timestamp,
       },
     }) + '\n';
 
