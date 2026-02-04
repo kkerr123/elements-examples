@@ -6,11 +6,29 @@ import {
   settingsManager,
   SessionStorage,
   Repository,
+  AgentRuntime,
+  createAgent,
+  CheckpointManager,
+  type AgentState,
+  type AgentMessage,
+  type ToolCall,
+  type ToolCallResult,
 } from '@nexus/core';
 
 // Keep a global reference of the window object to prevent garbage collection
 let mainWindow: BrowserWindow | null = null;
 let sessionStorage: SessionStorage | null = null;
+let checkpointManager: CheckpointManager | null = null;
+
+// Agent management
+const runningAgents = new Map<string, AgentRuntime>();
+
+// Helper to send events to renderer
+function sendToRenderer(channel: string, data: unknown): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, data);
+  }
+}
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -141,6 +159,13 @@ handleIpc('project:open', async (payload: { path?: string }) => {
   // Initialize session storage for this project
   sessionStorage = new SessionStorage(projectManager.getSessionsDir());
 
+  // Initialize checkpoint manager
+  checkpointManager = new CheckpointManager(
+    projectPath,
+    projectManager.getCheckpointsDir()
+  );
+  await checkpointManager.initialize();
+
   // Add to recent projects
   await settingsManager.addRecentProject({
     id: project.id,
@@ -245,61 +270,318 @@ handleIpc('session:message', async (payload: { sessionId: string; message: any }
 });
 
 // =============================================================================
-// Agent Handlers (TODO: Implement with actual agent runtime)
+// Agent Handlers
 // =============================================================================
 
-handleIpc('agent:spawn', async (payload) => {
+interface SpawnAgentPayload {
+  name: string;
+  task: string;
+  permissionMode?: 'explore' | 'ask' | 'auto';
+  sessionId?: string;
+  useWorktree?: boolean;
+}
+
+handleIpc('agent:spawn', async (payload: SpawnAgentPayload) => {
   console.log('Spawning agent:', payload);
 
   // Check if API key is configured
-  if (!settingsManager.hasApiKey()) {
+  const apiKey = settingsManager.getAnthropicApiKey();
+  if (!apiKey) {
     throw new Error('Please configure your Anthropic API key in Settings');
   }
 
-  // TODO: Implement actual agent spawning with git worktree
-  // For now, return mock data
+  // Check if project is open
+  if (!projectManager.isOpen()) {
+    throw new Error('No project is open');
+  }
+
+  // Determine working directory
+  let workingDirectory = projectManager.getProject()!.path;
+
+  // Optionally create a worktree for isolation
+  if (payload.useWorktree) {
+    const worktreeManager = projectManager.getWorktreeManager();
+    const worktreeName = `agent-${Date.now()}`;
+    const worktree = await worktreeManager.create({
+      name: worktreeName,
+      baseBranch: 'HEAD',
+    });
+    workingDirectory = worktree.path;
+  }
+
+  // Create agent
+  const agent = createAgent(
+    {
+      name: payload.name,
+      workingDirectory,
+      permissionMode: payload.permissionMode || 'ask',
+      systemPrompt: `You are ${payload.name}, an AI assistant helping with software development tasks.
+
+Current project: ${projectManager.getProject()!.name}
+Working directory: ${workingDirectory}
+
+Your task: ${payload.task}
+
+Work carefully and methodically. Read relevant files before making changes. Explain your actions.`,
+    },
+    apiKey
+  );
+
+  const agentId = agent.getConfig().id;
+
+  // Set up event forwarding to renderer
+  agent.on('status', (status) => {
+    sendToRenderer('agent:event', { agentId, type: 'status', data: status });
+  });
+
+  agent.on('message', (message: AgentMessage) => {
+    sendToRenderer('agent:event', { agentId, type: 'message', data: message });
+
+    // Also save to session if we have one
+    if (payload.sessionId && sessionStorage) {
+      sessionStorage.appendMessage(payload.sessionId, {
+        role: message.role,
+        content: message.content,
+        timestamp: message.timestamp,
+        toolCalls: message.toolCalls,
+        toolResults: message.toolResults,
+      });
+    }
+  });
+
+  agent.on('text', (text) => {
+    sendToRenderer('agent:event', { agentId, type: 'text', data: text });
+  });
+
+  agent.on('tool_call', (toolCall: ToolCall) => {
+    sendToRenderer('agent:event', { agentId, type: 'tool_call', data: toolCall });
+  });
+
+  agent.on('tool_result', (result: ToolCallResult) => {
+    sendToRenderer('agent:event', { agentId, type: 'tool_result', data: result });
+  });
+
+  agent.on('approval_required', (toolCalls: ToolCall[]) => {
+    sendToRenderer('agent:event', { agentId, type: 'approval_required', data: toolCalls });
+  });
+
+  agent.on('turn_complete', (turnNumber) => {
+    sendToRenderer('agent:event', { agentId, type: 'turn_complete', data: turnNumber });
+  });
+
+  agent.on('complete', (state: AgentState) => {
+    sendToRenderer('agent:event', { agentId, type: 'complete', data: state });
+    runningAgents.delete(agentId);
+  });
+
+  agent.on('error', (error: Error) => {
+    sendToRenderer('agent:event', { agentId, type: 'error', data: error.message });
+    runningAgents.delete(agentId);
+  });
+
+  // Store agent reference
+  runningAgents.set(agentId, agent);
+
+  // Start the agent (don't await - it runs in the background)
+  agent.run(payload.task).catch((err) => {
+    console.error('Agent error:', err);
+  });
+
   return {
-    id: crypto.randomUUID(),
-    status: 'queued',
-    message: 'Agent spawning not yet implemented',
+    id: agentId,
+    name: agent.getConfig().name,
+    status: agent.getState().status,
+    workingDirectory,
   };
 });
 
-handleIpc('agent:pause', async (payload) => {
-  console.log('Pausing agent:', payload);
+handleIpc('agent:pause', async (payload: { agentId: string }) => {
+  const agent = runningAgents.get(payload.agentId);
+  if (!agent) {
+    throw new Error('Agent not found');
+  }
+  agent.pause();
+  return { success: true, status: agent.getState().status };
+});
+
+handleIpc('agent:resume', async (payload: { agentId: string }) => {
+  const agent = runningAgents.get(payload.agentId);
+  if (!agent) {
+    throw new Error('Agent not found');
+  }
+  agent.resume();
+  return { success: true, status: agent.getState().status };
+});
+
+handleIpc('agent:terminate', async (payload: { agentId: string }) => {
+  const agent = runningAgents.get(payload.agentId);
+  if (!agent) {
+    throw new Error('Agent not found');
+  }
+  agent.terminate();
+  runningAgents.delete(payload.agentId);
   return { success: true };
 });
 
-handleIpc('agent:resume', async (payload) => {
-  console.log('Resuming agent:', payload);
+handleIpc('agent:status', async (payload: { agentId: string }) => {
+  const agent = runningAgents.get(payload.agentId);
+  if (!agent) {
+    return { status: 'not_found' };
+  }
+  return agent.getState();
+});
+
+handleIpc('agent:approve', async (payload: { agentId: string; toolCallIds: string[] }) => {
+  const agent = runningAgents.get(payload.agentId);
+  if (!agent) {
+    throw new Error('Agent not found');
+  }
+  agent.approveToolCalls(payload.toolCallIds);
   return { success: true };
 });
 
-handleIpc('agent:terminate', async (payload) => {
-  console.log('Terminating agent:', payload);
+handleIpc('agent:reject', async (payload: { agentId: string; toolCallIds: string[] }) => {
+  const agent = runningAgents.get(payload.agentId);
+  if (!agent) {
+    throw new Error('Agent not found');
+  }
+  agent.rejectToolCalls(payload.toolCallIds);
   return { success: true };
 });
 
-handleIpc('agent:status', async (payload) => {
-  console.log('Getting agent status:', payload);
-  return { status: 'running' };
+handleIpc('agent:list', async () => {
+  const agents = Array.from(runningAgents.entries()).map(([id, agent]) => ({
+    id,
+    name: agent.getConfig().name,
+    status: agent.getState().status,
+    currentTask: agent.getState().currentTask,
+    turnCount: agent.getState().turnCount,
+  }));
+  return { agents };
+});
+
+handleIpc('agent:sendMessage', async (payload: { agentId: string; message: string }) => {
+  const agent = runningAgents.get(payload.agentId);
+  if (!agent) {
+    throw new Error('Agent not found');
+  }
+
+  // If agent is idle, start it with the new message
+  const state = agent.getState();
+  if (state.status === 'idle' || state.status === 'completed') {
+    agent.run(payload.message);
+  } else {
+    throw new Error('Agent is busy. Please wait for it to complete or pause it first.');
+  }
+
+  return { success: true };
 });
 
 // =============================================================================
-// Checkpoint Handlers (TODO: Implement)
+// Checkpoint Handlers
 // =============================================================================
 
-handleIpc('checkpoint:create', async (payload) => {
-  console.log('Creating checkpoint:', payload);
-  return { id: crypto.randomUUID() };
+interface CreateCheckpointPayload {
+  agentId: string;
+  sessionId: string;
+  trigger?: 'auto' | 'manual' | 'milestone';
+  description?: string;
+}
+
+handleIpc('checkpoint:create', async (payload: CreateCheckpointPayload) => {
+  if (!checkpointManager) {
+    throw new Error('No project is open');
+  }
+
+  // Get the agent to capture its state
+  const agent = runningAgents.get(payload.agentId);
+  const agentState = agent ? agent.getState() : null;
+
+  const checkpoint = await checkpointManager.create({
+    agentId: payload.agentId,
+    sessionId: payload.sessionId,
+    trigger: payload.trigger || 'manual',
+    description: payload.description,
+    conversationState: {
+      sessionId: payload.sessionId,
+      messages: agentState?.messages || [],
+      agentState: agentState,
+      timestamp: new Date().toISOString(),
+    },
+  });
+
+  return checkpoint;
 });
 
-handleIpc('checkpoint:restore', async (payload) => {
-  console.log('Restoring checkpoint:', payload);
+handleIpc('checkpoint:restore', async (payload: { checkpointId: string; targetPath?: string }) => {
+  if (!checkpointManager) {
+    throw new Error('No project is open');
+  }
+
+  const targetPath = payload.targetPath || projectManager.getProject()?.path;
+  if (!targetPath) {
+    throw new Error('No target path for restoration');
+  }
+
+  const result = await checkpointManager.restore(payload.checkpointId, targetPath);
+  if (!result.success) {
+    throw new Error(result.error);
+  }
+
+  // Load the conversation state
+  const conversationState = await checkpointManager.loadConversationState(payload.checkpointId);
+
+  return {
+    success: true,
+    conversationState,
+  };
+});
+
+handleIpc('checkpoint:list', async (payload: { agentId?: string; sessionId?: string }) => {
+  if (!checkpointManager) {
+    return { checkpoints: [] };
+  }
+
+  let checkpoints;
+  if (payload.agentId) {
+    checkpoints = await checkpointManager.listByAgent(payload.agentId);
+  } else if (payload.sessionId) {
+    checkpoints = await checkpointManager.listBySession(payload.sessionId);
+  } else {
+    // List all - get unique agents and merge
+    checkpoints = [];
+  }
+
+  return { checkpoints };
+});
+
+handleIpc('checkpoint:get', async (payload: { checkpointId: string }) => {
+  if (!checkpointManager) {
+    throw new Error('No project is open');
+  }
+
+  const checkpoint = await checkpointManager.get(payload.checkpointId);
+  if (!checkpoint) {
+    throw new Error('Checkpoint not found');
+  }
+
+  return checkpoint;
+});
+
+handleIpc('checkpoint:delete', async (payload: { checkpointId: string }) => {
+  if (!checkpointManager) {
+    throw new Error('No project is open');
+  }
+
+  await checkpointManager.delete(payload.checkpointId);
   return { success: true };
 });
 
-handleIpc('checkpoint:list', async (payload) => {
-  console.log('Listing checkpoints:', payload);
-  return { checkpoints: [] };
+handleIpc('checkpoint:diff', async (payload: { fromCheckpointId: string; toCheckpointId: string }) => {
+  if (!checkpointManager) {
+    throw new Error('No project is open');
+  }
+
+  const diff = await checkpointManager.diff(payload.fromCheckpointId, payload.toCheckpointId);
+  return { diff };
 });

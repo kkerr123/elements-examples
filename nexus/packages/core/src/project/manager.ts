@@ -111,6 +111,20 @@ export class ProjectManager {
   }
 
   /**
+   * Get the current project info
+   */
+  getProject(): { id: string; name: string; path: string } | null {
+    if (!this.config || !this.projectPath) {
+      return null;
+    }
+    return {
+      id: this.config.id,
+      name: this.config.name,
+      path: this.projectPath,
+    };
+  }
+
+  /**
    * Get repository info for the current project
    */
   async getRepositoryInfo(): Promise<RepositoryInfo> {

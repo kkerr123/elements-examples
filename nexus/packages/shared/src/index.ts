@@ -180,6 +180,10 @@ export type IpcChannel =
   | 'agent:resume'
   | 'agent:terminate'
   | 'agent:status'
+  | 'agent:approve'
+  | 'agent:reject'
+  | 'agent:list'
+  | 'agent:sendMessage'
   | 'session:create'
   | 'session:list'
   | 'session:get'
@@ -188,7 +192,31 @@ export type IpcChannel =
   | 'project:list'
   | 'checkpoint:create'
   | 'checkpoint:restore'
-  | 'checkpoint:list';
+  | 'checkpoint:list'
+  | 'checkpoint:get'
+  | 'checkpoint:delete'
+  | 'checkpoint:diff';
+
+// =============================================================================
+// Agent Event Types (Main -> Renderer real-time events)
+// =============================================================================
+
+export type AgentEventType =
+  | 'status'
+  | 'message'
+  | 'text'
+  | 'tool_call'
+  | 'tool_result'
+  | 'approval_required'
+  | 'turn_complete'
+  | 'complete'
+  | 'error';
+
+export interface AgentEvent {
+  agentId: string;
+  type: AgentEventType;
+  data: unknown;
+}
 
 export interface IpcRequest<T = unknown> {
   channel: IpcChannel;

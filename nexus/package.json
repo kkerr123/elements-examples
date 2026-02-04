@@ -7,7 +7,8 @@
   "license": "MIT",
   "scripts": {
     "dev": "pnpm --filter @nexus/desktop dev",
-    "build": "pnpm --filter @nexus/desktop build",
+    "build": "pnpm --filter @nexus/shared build && pnpm --filter @nexus/core build && pnpm --filter @nexus/desktop build",
+    "build:core": "pnpm --filter @nexus/shared build && pnpm --filter @nexus/core build",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint"
   },

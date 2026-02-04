@@ -104,7 +104,7 @@ export class SessionStorage {
    */
   async updateMetadata(
     sessionId: string,
-    updates: Partial<Omit<Session, 'id' | 'messages'>>
+    updates: Partial<Pick<Session, 'status' | 'title' | 'archived' | 'flagged'>>
   ): Promise<void> {
     const metaPath = this.getMetadataPath(sessionId);
 
@@ -114,7 +114,6 @@ export class SessionStorage {
 
       const updated: SessionMetadata = {
         ...metadata,
-        ...updates,
         updatedAt: new Date().toISOString(),
       };
 
