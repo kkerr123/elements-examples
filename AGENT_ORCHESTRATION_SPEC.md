@@ -99,7 +99,7 @@ A developer-first platform that combines isolated agent development environments
 ### What Makes This Loop Unique
 
 1. **True parallelization**: Unlike existing tools, developers can run 3-5 agents simultaneously on different concerns without conflicts
-2. **Environment isolation as a first-class concept**: Each agent operates in its own container/branch, eliminating "stepping on each other's toes"
+2. **Environment isolation as a first-class concept**: Each agent operates in its own git worktree, eliminating "stepping on each other's toes"
 3. **Orchestration visibility**: A single pane of glass shows all agent activity, enabling the developer to be a "conductor" rather than a "player"
 4. **Intelligent merging**: The system understands agent work products and can suggest merge order, flag conflicts early, and auto-resolve non-conflicting changes
 
@@ -116,13 +116,8 @@ interface AgentSpawnConfig {
   name: string;
   task: string;
   environment: {
-    type: 'container' | 'worktree' | 'branch-only';
     baseRef: string;  // git ref to branch from
-    resources: {
-      cpu?: string;   // e.g., "2 cores"
-      memory?: string; // e.g., "4GB"
-      timeout?: number; // max runtime in minutes
-    };
+    timeout?: number; // max runtime in minutes
   };
   permissions: PermissionMode;
   sources: SourceConfig[];  // MCP servers, APIs, filesystems
@@ -130,13 +125,15 @@ interface AgentSpawnConfig {
 }
 ```
 
-**Environment Types:**
+**Environment Isolation:**
 
-| Type | Isolation Level | Use Case | Performance |
-|------|-----------------|----------|-------------|
-| `container` | Full (Docker/Podman) | Untrusted or risky operations | Medium |
-| `worktree` | Filesystem | Parallel feature development | Fast |
-| `branch-only` | Git only | Quick experiments | Fastest |
+All agents run in **git worktrees** - isolated filesystem copies that share the git object store. This provides:
+- Fast startup (~500ms)
+- Full filesystem isolation between agents
+- Native git tooling compatibility
+- Minimal disk overhead (shared objects)
+
+> **Future consideration:** Container isolation may be added later for untrusted operations if user demand warrants the added complexity.
 
 #### 1.2 Agent Templates (Craft-inspired)
 
@@ -195,8 +192,7 @@ type AgentStatus =
 
 - **Live diff stream**: See file changes as agents make them
 - **Tool call timeline**: Visualize what tools each agent invokes
-- **Resource utilization**: CPU/memory per agent environment
-- **Conflict radar**: Early warning when agent work products might conflict
+- **Overlap detector**: Highlights when multiple agents touch the same files/functions
 
 ### 3. Checkpoint & Rollback System (Void-inspired)
 
@@ -308,26 +304,84 @@ interface Skill {
 - `@api-designer`: "Design REST endpoints following our OpenAPI conventions in /docs/api-standards.md"
 - `@migration-writer`: "Generate database migrations using our Prisma schema conventions"
 
-### 6. Merge Orchestration
+### 6. Shared Context Store
 
-#### 6.1 Conflict Detection
+A critical feature for multi-agent orchestration: agents working on the same project should accumulate shared understanding.
 
-Pre-merge analysis that identifies:
-- **Hard conflicts**: Same lines modified by multiple agents
-- **Semantic conflicts**: Different agents modified related code
-- **Dependency conflicts**: Agent A added a dependency Agent B removed
+#### 6.1 Project Knowledge Base
 
-#### 6.2 Merge Strategies
+```typescript
+interface SharedContext {
+  projectId: string;
+  entries: ContextEntry[];
+}
+
+interface ContextEntry {
+  id: string;
+  type: 'discovery' | 'decision' | 'convention' | 'warning';
+  content: string;
+  source: {
+    agentId: string;
+    timestamp: Date;
+    sessionId: string;
+  };
+  references: string[];  // file paths, URLs, etc.
+}
+```
+
+**Example entries:**
+- `discovery`: "Auth tokens are stored in Redis with prefix `auth:session:`"
+- `decision`: "We chose Prisma over TypeORM for the ORM"
+- `convention`: "API routes follow pattern `/api/v1/{resource}/{id}`"
+- `warning`: "The legacy payment module has undocumented side effects"
+
+#### 6.2 Context Flow
+
+```
+Agent A discovers: "Auth uses JWT stored in Redis"
+                    │
+                    ▼
+            ┌───────────────┐
+            │ Shared Context│
+            │     Store     │
+            └───────┬───────┘
+                    │
+        ┌───────────┼───────────┐
+        ▼           ▼           ▼
+    Agent B     Agent C     Agent D
+    (reads)     (reads)     (reads)
+```
+
+Agents automatically read shared context at spawn and can contribute discoveries during their work. This prevents the "Agent B doesn't know what Agent A learned" problem.
+
+---
+
+### 7. Merge Orchestration
+
+#### 7.1 Overlap Detection
+
+Pre-merge analysis that identifies file and function-level overlaps:
+
+| Detection Type | Reliability | Description |
+|----------------|-------------|-------------|
+| **File overlap** | High | Multiple agents modified same file |
+| **Function overlap** | High | Multiple agents modified same function |
+| **Dependency mismatch** | High | Conflicting package.json / lockfile changes |
+
+> **Scope limitation:** Semantic conflicts ("related code") are not reliably detectable. The system focuses on what can be accurately identified rather than promising magic.
+
+#### 7.2 Merge Strategies
 
 ```typescript
 type MergeStrategy =
   | 'sequential'    // Merge one agent at a time in order
   | 'parallel'      // Merge non-conflicting changes simultaneously
-  | 'interactive'   // User resolves each conflict
-  | 'ai-assisted';  // AI suggests resolutions, user approves
+  | 'interactive';  // User resolves each conflict
 ```
 
-#### 6.3 Merge Visualization
+> **Note:** AI can explain conflicts and suggest merge order, but actual conflict resolution requires precise text manipulation that should remain user-controlled.
+
+#### 7.3 Merge Visualization
 
 ```
                         main
@@ -371,13 +425,11 @@ type MergeStrategy =
 │                                                                      │
 │  ┌─────────────────────────────────────────────────────────────┐    │
 │  │                    Presentation Layer                        │    │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │    │
-│  │  │   Electron  │  │    Web      │  │    VS Code          │  │    │
-│  │  │   Desktop   │  │    UI       │  │    Extension        │  │    │
-│  │  └─────────────┘  └─────────────┘  └─────────────────────┘  │    │
-│  │         │                │                    │              │    │
-│  │         └────────────────┼────────────────────┘              │    │
-│  │                          ▼                                   │    │
+│  │                    ┌─────────────┐                           │    │
+│  │                    │   Electron  │                           │    │
+│  │                    │   Desktop   │                           │    │
+│  │                    └──────┬──────┘                           │    │
+│  │                           ▼                                  │    │
 │  │              React + shadcn/ui + Tailwind                    │    │
 │  └─────────────────────────────────────────────────────────────┘    │
 │                             │                                        │
@@ -415,10 +467,9 @@ type MergeStrategy =
 │                             ▼                                        │
 │  ┌─────────────────────────────────────────────────────────────┐    │
 │  │                    Environment Layer                         │    │
-│  │  ┌───────────────┐  ┌───────────────┐  ┌─────────────────┐  │    │
-│  │  │  Git Worktree │  │   Container   │  │   Resource      │  │    │
-│  │  │    Manager    │  │   Runtime     │  │   Allocator     │  │    │
-│  │  └───────────────┘  └───────────────┘  └─────────────────┘  │    │
+│  │         ┌───────────────────────────────────────┐            │    │
+│  │         │         Git Worktree Manager          │            │    │
+│  │         └───────────────────────────────────────┘            │    │
 │  └─────────────────────────────────────────────────────────────┘    │
 │                             │                                        │
 │                             ▼                                        │
@@ -438,11 +489,9 @@ type MergeStrategy =
 ```
 nexus/
 ├── apps/
-│   ├── desktop/          # Electron app
-│   │   ├── main/         # Main process (esbuild)
-│   │   └── renderer/     # React UI (Vite)
-│   ├── web/              # Web dashboard (optional)
-│   └── vscode/           # VS Code extension
+│   └── desktop/          # Electron app
+│       ├── main/         # Main process (esbuild)
+│       └── renderer/     # React UI (Vite)
 ├── packages/
 │   ├── core/             # Agent runtime, LLM clients
 │   ├── orchestrator/     # Fleet management, scheduling
@@ -472,7 +521,6 @@ nexus/
 | **Build (Renderer)** | Vite | HMR, modern bundling |
 | **State** | Zustand | Lightweight, TypeScript-native |
 | **Agent SDK** | Anthropic Agent SDK | First-party Claude integration |
-| **Container Runtime** | Docker/Podman | Ubiquitous, well-documented |
 | **Git Integration** | isomorphic-git + native | Worktree support, cross-platform |
 | **IPC** | Electron IPC + WebSocket | Real-time updates |
 | **Persistence** | JSONL (sessions) + SQLite (metadata) | Simple, portable |
@@ -484,33 +532,20 @@ nexus/
 ### 1. Agent Concurrency
 
 ```typescript
-interface ConcurrencyConfig {
-  maxConcurrentAgents: number;      // Default: 5
-  maxAgentsPerProject: number;      // Default: 10
-  resourceLimits: {
-    totalMemoryGB: number;          // Auto-detected
-    totalCPUCores: number;          // Auto-detected
-    reservedForSystem: number;      // Percentage (default: 20%)
-  };
-  scheduling: 'fifo' | 'priority' | 'resource-aware';
-}
+const MAX_CONCURRENT_AGENTS = 5;  // Simple limit, no complex scheduling
 ```
 
-**Resource-Aware Scheduling:**
-- Monitor system resources in real-time
-- Automatically pause/queue agents when resources are constrained
-- Priority system for critical agents
+Agents beyond the limit are queued (FIFO). If an agent fails due to system resources, the user is notified. No complex scheduling needed for typical dev machines running 3-5 concurrent agents.
 
 ### 2. Environment Isolation Performance
 
-| Isolation Type | Startup Time | Memory Overhead | Disk Usage |
-|----------------|--------------|-----------------|------------|
-| Branch-only | ~100ms | Minimal | Minimal |
-| Worktree | ~500ms | ~50MB (git index) | Repo size |
-| Container | ~2-5s | ~200MB base | Image + repo |
+| Metric | Value |
+|--------|-------|
+| Worktree startup | ~500ms |
+| Memory overhead | ~50MB per agent (git index) |
+| Disk usage | Shared git objects, minimal duplication |
 
 **Optimization Strategies:**
-- Pre-warm container pool for common base images
 - Use sparse checkouts for large repos
 - Implement copy-on-write for worktrees where supported
 
@@ -535,41 +570,16 @@ interface LLMConfig {
 
 ### 4. Checkpoint Storage
 
-- **Incremental snapshots**: Store only diffs from previous checkpoint
+- **Git refs**: Code state stored as git refs (git handles compression)
+- **Conversation state**: Gzip-compressed JSON
 - **Lazy loading**: Only hydrate checkpoint data on restore
-- **Compression**: LZ4 for speed, zstd for archival
-- **Pruning**: Auto-delete old checkpoints based on retention policy
+- **Pruning**: Auto-delete old checkpoints based on retention policy (default: 7 days)
 
 ---
 
 ## Extensibility
 
-### 1. Plugin System
-
-```typescript
-interface NexusPlugin {
-  name: string;
-  version: string;
-
-  // Lifecycle hooks
-  onAgentSpawn?: (agent: Agent) => void;
-  onAgentComplete?: (agent: Agent, result: AgentResult) => void;
-  onCheckpoint?: (checkpoint: Checkpoint) => void;
-  onMerge?: (agents: Agent[], result: MergeResult) => void;
-
-  // Extension points
-  agentTemplates?: AgentTemplate[];
-  sources?: SourceDefinition[];
-  skills?: SkillDefinition[];
-  mergeStrategies?: MergeStrategy[];
-
-  // UI extensions
-  dashboardPanels?: PanelDefinition[];
-  contextMenuItems?: MenuItemDefinition[];
-}
-```
-
-### 2. MCP Server Support
+### 1. MCP Server Support
 
 Native support for Model Context Protocol servers:
 - Built-in server management (start, stop, restart)
@@ -577,7 +587,7 @@ Native support for Model Context Protocol servers:
 - Health checking and auto-restart
 - Custom tool schemas with `_intent` fields for smart summarization
 
-### 3. Custom Agent Templates
+### 2. Custom Agent Templates
 
 ```yaml
 # .nexus/templates/my-custom-agent.yaml
@@ -616,7 +626,7 @@ systemPrompt: |
   Write tests for all new code.
 ```
 
-### 4. Deep Linking Protocol
+### 3. Deep Linking Protocol
 
 ```
 nexus://spawn?template=feature-builder&task=Add%20user%20auth
@@ -637,10 +647,10 @@ nexus://checkpoint/{checkpointId}/restore
 
 ### 2. Environment Isolation
 
-- Sandboxed environments have no access to host credentials by default
+- Git worktrees have no access to host credentials by default
 - MCP server subprocesses filter sensitive env vars
 - Network access is opt-in per agent
-- Container isolation for untrusted operations
+- Each agent's worktree is isolated from others
 
 ### 3. Audit Trail
 
@@ -683,38 +693,36 @@ All agent actions are logged for review.
 
 ### Phase 1: Foundation (MVP)
 
-- [ ] Core agent runtime with environment isolation
+- [ ] Core agent runtime with git worktree isolation
 - [ ] Basic orchestration dashboard (3-pane layout)
 - [ ] Permission system (explore/ask/auto)
-- [ ] Git worktree integration
 - [ ] Checkpoint system (auto + manual)
 - [ ] Session persistence (JSONL)
+- [ ] Shared context store (basic read/write)
 
 ### Phase 2: Orchestration
 
 - [ ] Fleet management (spawn, pause, resume, terminate)
 - [ ] Status workflow system
-- [ ] Real-time visualization (diffs, tool calls)
-- [ ] Merge coordinator with conflict detection
-- [ ] Source system (MCP, REST)
+- [ ] Real-time visualization (diffs, tool calls, overlap detection)
+- [ ] Merge coordinator with file/function overlap detection
+- [ ] Source system with agent-driven configuration (MCP, REST)
 - [ ] Skill system with `@` invocation
+- [ ] Agent templates (Feature Builder, Refactorer, Bug Hunter, Documenter, Reviewer)
 
 ### Phase 3: Scale
 
-- [ ] Container isolation option
-- [ ] Resource-aware scheduling
-- [ ] Plugin system
-- [ ] VS Code extension
+- [ ] Container isolation option (if user demand warrants)
+- [ ] VS Code extension (if user demand warrants)
 - [ ] Team collaboration features
+- [ ] Plugin system (based on observed extension patterns)
 - [ ] Cloud sync (optional)
 
 ### Phase 4: Intelligence
 
-- [ ] AI-assisted merge resolution
-- [ ] Predictive conflict detection
 - [ ] Agent performance analytics
 - [ ] Smart task decomposition
-- [ ] Cross-agent context sharing
+- [ ] Enhanced shared context with automatic discovery
 
 ---
 
@@ -758,15 +766,29 @@ All agent actions are logged for review.
 
 ### Story 3: Team Coordination
 
-> As a **tech lead**, I want to **see what all my team's agents are doing**, so that I can **identify conflicts early and coordinate work**.
+> As a **tech lead**, I want to **see what all my team's agents are doing**, so that I can **identify overlaps early and coordinate work**.
 
 **Acceptance Criteria:**
 - Dashboard shows all active agents
-- Conflict radar highlights potential issues
+- Overlap detector highlights when agents touch same files
 - Can pause/redirect agents as needed
 - Can review and approve agent work
 
 ---
 
-*Document Version: 1.0*
+*Document Version: 1.1*
 *Last Updated: 2026-02-04*
+
+---
+
+## Changelog
+
+### v1.1 - Developer Review Updates
+- Simplified environment isolation to git worktrees only (containers deferred)
+- Removed plugin system from MVP (extract patterns later)
+- Removed AI-assisted merge resolution (AI explains, user resolves)
+- Scoped to desktop app only (web/VS Code deferred based on demand)
+- Simplified concurrency to max agent limit (no complex scheduling)
+- Simplified checkpoint compression (git + gzip)
+- Added Shared Context Store for cross-agent knowledge sharing
+- Renamed "Conflict Radar" to "Overlap Detector" with honest scope
