@@ -6,12 +6,14 @@
   "description": "Nexus Desktop App - Agent Orchestration Platform",
   "main": "dist/main/index.js",
   "scripts": {
-    "dev": "concurrently -k \"pnpm dev:main\" \"pnpm dev:renderer\" \"pnpm dev:electron\"",
-    "dev:main": "esbuild main/index.ts --bundle --platform=node --outfile=dist/main/index.js --external:electron --watch",
+    "dev": "concurrently -k \"pnpm dev:main\" \"pnpm dev:preload\" \"pnpm dev:renderer\" \"pnpm dev:electron\"",
+    "dev:main": "esbuild main/index.ts --bundle --platform=node --outfile=dist/main/index.js --external:electron --define:process.env.NODE_ENV=\\\"development\\\" --watch",
+    "dev:preload": "esbuild main/preload.ts --bundle --platform=node --outfile=dist/main/preload.js --external:electron --watch",
     "dev:renderer": "vite",
-    "dev:electron": "sleep 2 && electron .",
-    "build": "pnpm build:main && pnpm build:renderer",
+    "dev:electron": "sleep 3 && electron .",
+    "build": "pnpm build:main && pnpm build:preload && pnpm build:renderer",
     "build:main": "esbuild main/index.ts --bundle --platform=node --outfile=dist/main/index.js --external:electron --minify",
+    "build:preload": "esbuild main/preload.ts --bundle --platform=node --outfile=dist/main/preload.js --external:electron --minify",
     "build:renderer": "vite build",
     "start": "electron .",
     "typecheck": "tsc --noEmit"
