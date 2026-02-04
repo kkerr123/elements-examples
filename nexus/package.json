@@ -1,0 +1,21 @@
+{
+  "name": "nexus",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent Orchestration Platform - Parallelize your development with isolated agent environments",
+  "author": "Nexus Team",
+  "license": "MIT",
+  "scripts": {
+    "dev": "pnpm --filter @nexus/desktop dev",
+    "build": "pnpm --filter @nexus/desktop build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  },
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
